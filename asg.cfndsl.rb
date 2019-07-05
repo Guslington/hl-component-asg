@@ -1,7 +1,5 @@
 CloudFormation do
 
-  az_conditions_resources('SubnetCompute', maximum_availability_zones)
-
   safe_component_name = component_name.capitalize.gsub('_','').gsub('-','')
 
   sg_tags = []
@@ -11,24 +9,38 @@ CloudFormation do
 
   extra_tags.each { |key,value| sg_tags << { Key: "#{key}", Value: FnSub(value) } } if defined? extra_tags
 
-  EC2_SecurityGroup("SecurityGroup#{safe_component_name}") do
-    GroupDescription FnSub("${EnvironmentName}-#{component_name}")
-    VpcId Ref('VPCId')
-    Tags sg_tags
-  end
+  ingress = []
+  security_group_rules.each do |rule|
+    sg_rule = {
+      FromPort: rule['from_port'],
+      IpProtocol: rule['protocol'],
+      ToPort: rule['to_port']
+    }
 
-  security_groups.each do |name, sg|
-    sg['ports'].each do |port|
-      EC2_SecurityGroupIngress("#{name}SGRule#{port['from']}") do
-        Description FnSub("Allows #{port['from']} from #{name}")
-        IpProtocol 'tcp'
-        FromPort port['from']
-        ToPort port.key?('to') ? port['to'] : port['from']
-        GroupId FnGetAtt("SecurityGroup#{safe_component_name}",'GroupId')
-        SourceSecurityGroupId sg.key?('stack_param') ? Ref(sg['stack_param']) : Ref(name)
-      end
-    end if sg.key?('ports')
-  end if defined? security_groups
+    if rule['security_group_id']
+      sg_rule['SourceSecurityGroupId'] = FnSub(rule['security_group_id'])
+    else
+      sg_rule['CidrIp'] = FnSub(rule['ip'])
+    end
+    if rule['desc']
+      sg_rule['Description'] = FnSub(rule['desc'])
+    end
+    ingress << sg_rule
+  end if defined?(security_group_rules)
+
+  EC2_SecurityGroup "SecurityGroupASG" do
+    VpcId Ref('VPCId')
+    GroupDescription FnJoin(' ', [ Ref(:EnvironmentName), component_name, 'security group' ])
+    SecurityGroupIngress ingress if ingress.any?
+    SecurityGroupEgress ([
+      {
+        CidrIp: "0.0.0.0/0",
+        Description: "outbound all for ports",
+        IpProtocol: -1,
+      }
+    ])
+    Tags tags + [{ Key: 'Name', Value: FnJoin('-', [ Ref(:EnvironmentName), component_name, 'security-group' ])}]
+  end
 
   policies = []
   iam_policies.each do |name,policy|
@@ -61,7 +73,7 @@ CloudFormation do
     AssociatePublicIpAddress public_address
     IamInstanceProfile Ref('InstanceProfile')
     KeyName Ref('KeyName')
-    SecurityGroups [ Ref("SecurityGroup#{safe_component_name}") ]
+    SecurityGroups [ Ref("SecurityGroupASG") ]
     UserData FnBase64(FnSub(user_data))
   end
 
@@ -97,7 +109,7 @@ CloudFormation do
     LoadBalancerNames asg_loadbalancers if asg_loadbalancers.any?
     TargetGroupARNs asg_targetgroups if asg_targetgroups.any?
     TerminationPolicies termination_policies
-    VPCZoneIdentifier az_conditional_resources('SubnetCompute', maximum_availability_zones)
+    VPCZoneIdentifier Ref('SubnetIds')
     Tags asg_tags.uniq { |h| h[:Key] }
   end
 
@@ -210,7 +222,7 @@ CloudFormation do
     }
   end
 
-  Output("SecurityGroup#{safe_component_name}", Ref("SecurityGroup#{safe_component_name}"))
-  Output("AutoScaleGroup#{safe_component_name}", Ref('AutoScaleGroup'))
+  Output("SecurityGroup", Ref("SecurityGroupASG"))
+  Output("AutoScaleGroup", Ref('AutoScaleGroup'))
 
 end

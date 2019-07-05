@@ -1,12 +1,5 @@
 maximum_availability_zones: 5
 
-security_groups:
-  SecurityGroupBastion:
-    ports:
-      - from: 22
-        to: 22
-      - from: 80
-
 iam_policies:
   loadbalancer-manage:
     action:

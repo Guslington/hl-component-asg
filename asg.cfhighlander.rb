@@ -1,9 +1,5 @@
 CfhighlanderTemplate do
 
-  DependsOn 'vpc@1.5.0'
-
-  Name 'asg'
-
   Parameters do
     ComponentParam 'EnvironmentName', 'dev', isGlobal: true
     ComponentParam 'EnvironmentType', 'development', isGlobal: true
@@ -16,10 +12,8 @@ CfhighlanderTemplate do
     ComponentParam 'MinSize'
     ComponentParam 'MaxSize'
     ComponentParam 'HealthCheckType', 'EC2', allowedValues: ['EC2','ELB']
-    
-    maximum_availability_zones.times do |az|
-      ComponentParam "SubnetCompute#{az}"
-    end
+    ComponentParam 'SubnetIds', type: 'CommaDelimitedList'
+
     security_groups.each do |name, sg|
       ComponentParam name, type: 'AWS::EC2::SecurityGroup::Id'
     end if defined? security_groups
