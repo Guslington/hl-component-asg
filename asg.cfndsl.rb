@@ -1,13 +1,15 @@
 CloudFormation do
 
-  safe_component_name = component_name.capitalize.gsub('_','').gsub('-','')
+  Condition 'IsScalingEnabled', FnEquals(Ref('EnableScaling'), 'true')
+  Condition 'DefinedLoadbalancers', FnNot(FnEquals(Ref('LoadBalancerNames'), ''))
+  Condition 'DefinedTargetGroups', FnNot(FnEquals(Ref('TargetGroupARNs'), ''))
 
-  sg_tags = []
-  sg_tags << { Key: 'Environment', Value: Ref(:EnvironmentName)}
-  sg_tags << { Key: 'EnvironmentType', Value: Ref(:EnvironmentType)}
-  sg_tags << { Key: 'Name', Value: FnSub("${EnvironmentName}-#{component_name}")}
 
-  extra_tags.each { |key,value| sg_tags << { Key: "#{key}", Value: FnSub(value) } } if defined? extra_tags
+  asg_tags = []
+  asg_tags.push({ Key: 'Name', Value: FnSub("${EnvironmentName}-#{component_name}") })
+  asg_tags.push({ Key: 'EnvironmentName', Value: Ref(:EnvironmentName) })
+  asg_tags.push({ Key: 'EnvironmentType', Value: Ref(:EnvironmentType) })
+  asg_tags.push(*tags.map {|k,v| {Key: k, Value: FnSub(v)}}).uniq { |h| h[:Key] } if defined? tags
 
   ingress = []
   security_group_rules.each do |rule|
@@ -39,7 +41,7 @@ CloudFormation do
         IpProtocol: -1,
       }
     ])
-    Tags tags + [{ Key: 'Name', Value: FnJoin('-', [ Ref(:EnvironmentName), component_name, 'security-group' ])}]
+    Tags tags
   end
 
   policies = []
@@ -48,9 +50,16 @@ CloudFormation do
   end if defined? iam_policies
 
   Role('Role') do
-    AssumeRolePolicyDocument service_role_assume_policy(['ec2','ssm'])
+    AssumeRolePolicyDocument service_role_assume_policy('ec2')
     Path '/'
     Policies(policies)
+    Metadata({
+      cfn_nag: {
+        rules_to_suppress: [
+          { id: 'F3', reason: 'future considerations to further define the describe permisions' }
+        ]
+      }
+    })
   end
 
   InstanceProfile('InstanceProfile') do
@@ -58,171 +67,143 @@ CloudFormation do
     Roles [Ref('Role')]
   end
 
-  volumes = []
-  volumes << {
-    DeviceName: '/dev/xvda',
-    Ebs: {
-      VolumeSize: volume_size
-    }
-  } if defined? volume_size
+  asg_tags.push({ Key: 'Role', Value: component_name })
+  asg_tags.push({ Key: 'Name', Value: FnSub("${EnvironmentName}-#{component_name}-xx") })
+  asg_tags.push(*instance_tags.map {|k,v| {Key: k, Value: FnSub(v)}}).uniq { |h| h[:Key] } if defined? instance_tags
 
-  LaunchConfiguration('LaunchConfig') do
-    ImageId Ref('Ami')
-    InstanceType Ref('InstanceType')
-    BlockDeviceMappings volumes if defined? volume_size
-    AssociatePublicIpAddress public_address
-    IamInstanceProfile Ref('InstanceProfile')
-    KeyName Ref('KeyName')
-    SecurityGroups [ Ref("SecurityGroupASG") ]
-    UserData FnBase64(FnSub(user_data))
+  # Setup userdata string
+  instance_userdata = "#!/bin/bash\nset -o xtrace\n"
+  instance_userdata << userdata if defined? userdata
+  instance_userdata << efs_mount if enable_efs
+  instance_userdata << cfnsignal if defined? cfnsignal
+
+  template_data = {
+      SecurityGroupIds: [ Ref(:SecurityGroupASG) ],
+      TagSpecifications: [
+        { ResourceType: 'instance', Tags: asg_tags },
+        { ResourceType: 'volume', Tags: asg_tags }
+      ],
+      UserData: FnBase64(FnSub(instance_userdata)),
+      IamInstanceProfile: { Name: Ref(:InstanceProfile) },
+      KeyName: FnIf('KeyNameSet', Ref('KeyName'), Ref('AWS::NoValue')),
+      ImageId: Ref('Ami'),
+      Monitoring: { Enabled: detailed_monitoring },
+      InstanceType: Ref('InstanceType')
+  }
+
+  if defined? spot
+    spot_options = {
+      MarketType: 'spot',
+      SpotOptions: {
+        SpotInstanceType: (defined?(spot['type']) ? spot['type'] : 'one-time'),
+        MaxPrice: FnSub(spot['price'])
+      }
+    }
+    template_data[:InstanceMarketOptions] = FnIf('SpotPriceSet', spot_options, Ref('AWS::NoValue'))
   end
 
-  asg_tags = []
-  asg_tags << { Key: 'Environment', Value: Ref(:EnvironmentName), PropagateAtLaunch: true }
-  asg_tags << { Key: 'EnvironmentType', Value: Ref(:EnvironmentType), PropagateAtLaunch: true }
-  asg_tags << { Key: 'Name', Value: FnJoin('-', [ Ref(:EnvironmentName), component_name, 'xx' ]), PropagateAtLaunch: true }
-  asg_tags << { Key: 'Role', Value: component_name, PropagateAtLaunch: true }
+  if defined? volumes
+    template_data[:BlockDeviceMappings] = volumes
+  end
 
-  extra_tags.each { |key,value| asg_tags.unshift({ Key: "#{key}", Value: FnSub(value), PropagateAtLaunch: true }) } if defined? extra_tags
-  asg_extra_tags.each { |key,value| asg_tags.unshift({ Key: "#{key}", Value: FnSub(value), PropagateAtLaunch: true }) } if defined? asg_extra_tags
+  EC2_LaunchTemplate(:LaunchTemplate) {
+    LaunchTemplateData(template_data)
+  }
 
-  asg_loadbalancers = []
-  loadbalancers.each {|lb| asg_loadbalancers << Ref(lb)} if defined? loadbalancers
-
-  asg_targetgroups = []
-  targetgroups.each {|lb| asg_targetgroups << Ref(lb)} if defined? targetgroups
-
-  AutoScalingGroup('AutoScaleGroup') do
+  AutoScaling_AutoScalingGroup(:AutoScaleGroup) {
     AutoScalingGroupName name if defined? name
-    Cooldown cool_down if defined? cool_down
-    UpdatePolicy('AutoScalingRollingUpdate', {
-      "MinInstancesInService" => asg_update_policy['min'],
-      "MaxBatchSize"          => asg_update_policy['batch_size'],
-      "SuspendProcesses"      => asg_update_policy['suspend']
-    })
-    LaunchConfigurationName Ref('LaunchConfig')
-    HealthCheckGracePeriod health_check_grace_period
-    HealthCheckType Ref('HealthCheckType')
+    if (defined? update_policy) && (update_policy['type'] == 'rolling')
+      policy = {
+        MaxBatchSize: update_policy['batch'],
+        MinInstancesInService: FnIf('SpotPriceSet', 0, Ref('DesiredCapacity')),
+        SuspendProcesses: %w(HealthCheck ReplaceUnhealthy AZRebalance AlarmNotification ScheduledActions)
+      }
+      policy[:PauseTime] = "PT#{update_policy['pause']}M" if update_policy.has_key? 'pause'
+      UpdatePolicy(:AutoScalingRollingUpdate, policy)
+    end
+
+    DesiredCapacity Ref('DesiredSize')
     MinSize Ref('MinSize')
     MaxSize Ref('MaxSize')
-    # TODO: LifecycleHookSpecificationList []
-    LoadBalancerNames asg_loadbalancers if asg_loadbalancers.any?
-    TargetGroupARNs asg_targetgroups if asg_targetgroups.any?
-    TerminationPolicies termination_policies
+
     VPCZoneIdentifier Ref('SubnetIds')
-    Tags asg_tags.uniq { |h| h[:Key] }
+    HealthCheckGracePeriod health_check_grace_period if defined? health_check_grace_period
+    HealthCheckType Ref('HealthCheckType')
+
+    LoadBalancerNames FnIf('DefinedLoadBalancers',
+                            FnSplit(',', Ref('LoadBalancerNames')),
+                            Ref('AWS::NoValue'))
+    TargetGroupARNs FnIf('DefinedTargetGroups',
+                            FnSplit(',', Ref('TargetGroupARNs')),
+                            Ref('AWS::NoValue'))
+
+    LaunchTemplate({
+      LaunchTemplateId: Ref(:LaunchTemplate),
+      Version: FnGetAtt(:LaunchTemplate, :LatestVersionNumber)
+    })
+  }
+
+  if defined?(asg_autoscale)
+    if asg_autoscale.has_key?('cpu_high')
+
+        Resource("CPUUtilizationAlarmHigh") {
+          Condition 'IsScalingEnabled'
+          Type 'AWS::CloudWatch::Alarm'
+          Property('AlarmDescription', "Scale-up if CPUUtilization > #{asg_autoscale['cpu_high']}%")
+          Property('MetricName','CPUUtilization')
+          Property('Namespace','AWS/EC2')
+          Property('Statistic', 'Maximum')
+          Property('Period', '60')
+          Property('EvaluationPeriods', '2')
+          Property('Threshold', asg_autoscale['cpu_high'])
+          Property('AlarmActions', [ Ref('ScaleUpPolicy') ])
+          Property('Dimensions', [
+            { Name: 'AutoScalingGroupName', Value: Ref('AutoScaleGroup') }
+          ])
+          Property('ComparisonOperator', 'GreaterThanThreshold')
+        }
+
+        Resource("CPUUtilizationAlarmLow") {
+          Condition 'IsScalingEnabled'
+          Type 'AWS::CloudWatch::Alarm'
+          Property('AlarmDescription', "Scale-down if CPUUtilization < #{asg_autoscale['cpu_low']}%")
+          Property('MetricName','CPUUtilization')
+          Property('Namespace','AWS/EC2')
+          Property('Statistic', 'Maximum')
+          Property('Period', '60')
+          Property('EvaluationPeriods', '2')
+          Property('Threshold', asg_autoscale['cpu_low'])
+          Property('AlarmActions', [ Ref('ScaleDownPolicy') ])
+          Property('Dimensions', [
+            { Name: 'AutoScalingGroupName', Value: Ref('AutoScaleGroup') }
+          ])
+          Property('ComparisonOperator', 'LessThanThreshold')
+        }
+
+      end
+
+      Resource("ScaleUpPolicy") {
+        Condition 'IsScalingEnabled'
+        Type 'AWS::AutoScaling::ScalingPolicy'
+        Property('AdjustmentType', 'ChangeInCapacity')
+        Property('AutoScalingGroupName', Ref('AutoScaleGroup'))
+        Property('Cooldown','300')
+        Property('ScalingAdjustment', asg_autoscale['scale_up_adjustment'])
+      }
+
+      Resource("ScaleDownPolicy") {
+        Condition 'IsScalingEnabled'
+        Type 'AWS::AutoScaling::ScalingPolicy'
+        Property('AdjustmentType', 'ChangeInCapacity')
+        Property('AutoScalingGroupName', Ref('AutoScaleGroup'))
+        Property('Cooldown','300')
+        Property('ScalingAdjustment', asg_autoscale['scale_down_adjustment'])
+      }
   end
 
-  if defined?(ecs_autoscale)
-
-    if ecs_autoscale.has_key?('memory_high')
-
-      Resource("MemoryReservationAlarmHigh") {
-        Condition 'IsScalingEnabled'
-        Type 'AWS::CloudWatch::Alarm'
-        Property('AlarmDescription', "Scale-up if MemoryReservation > #{ecs_autoscale['memory_high']}% for 2 minutes")
-        Property('MetricName','MemoryReservation')
-        Property('Namespace','AWS/ECS')
-        Property('Statistic', 'Maximum')
-        Property('Period', '60')
-        Property('EvaluationPeriods', '2')
-        Property('Threshold', ecs_autoscale['memory_high'])
-        Property('AlarmActions', [ Ref('ScaleUpPolicy') ])
-        Property('Dimensions', [
-          {
-            'Name' => 'ClusterName',
-            'Value' => Ref('EcsCluster')
-          }
-        ])
-        Property('ComparisonOperator', 'GreaterThanThreshold')
-      }
-
-      Resource("MemoryReservationAlarmLow") {
-        Condition 'IsScalingEnabled'
-        Type 'AWS::CloudWatch::Alarm'
-        Property('AlarmDescription', "Scale-down if MemoryReservation < #{ecs_autoscale['memory_low']}%")
-        Property('MetricName','MemoryReservation')
-        Property('Namespace','AWS/ECS')
-        Property('Statistic', 'Maximum')
-        Property('Period', '60')
-        Property('EvaluationPeriods', '2')
-        Property('Threshold', ecs_autoscale['memory_low'])
-        Property('AlarmActions', [ Ref('ScaleDownPolicy') ])
-        Property('Dimensions', [
-          {
-            'Name' => 'ClusterName',
-            'Value' => Ref('EcsCluster')
-          }
-        ])
-        Property('ComparisonOperator', 'LessThanThreshold')
-      }
-
-    end
-
-    if ecs_autoscale.has_key?('cpu_high')
-
-      Resource("CPUReservationAlarmHigh") {
-        Condition 'IsScalingEnabled'
-        Type 'AWS::CloudWatch::Alarm'
-        Property('AlarmDescription', "Scale-up if CPUReservation > #{ecs_autoscale['cpu_high']}%")
-        Property('MetricName','CPUReservation')
-        Property('Namespace','AWS/ECS')
-        Property('Statistic', 'Maximum')
-        Property('Period', '60')
-        Property('EvaluationPeriods', '2')
-        Property('Threshold', ecs_autoscale['cpu_high'])
-        Property('AlarmActions', [ Ref('ScaleUpPolicy') ])
-        Property('Dimensions', [
-          {
-            'Name' => 'ClusterName',
-            'Value' => Ref('EcsCluster')
-          }
-        ])
-        Property('ComparisonOperator', 'GreaterThanThreshold')
-      }
-
-      Resource("CPUReservationAlarmLow") {
-        Condition 'IsScalingEnabled'
-        Type 'AWS::CloudWatch::Alarm'
-        Property('AlarmDescription', "Scale-up if CPUReservation < #{ecs_autoscale['cpu_low']}%")
-        Property('MetricName','CPUReservation')
-        Property('Namespace','AWS/ECS')
-        Property('Statistic', 'Maximum')
-        Property('Period', '60')
-        Property('EvaluationPeriods', '2')
-        Property('Threshold', ecs_autoscale['cpu_low'])
-        Property('AlarmActions', [ Ref('ScaleDownPolicy') ])
-        Property('Dimensions', [
-          {
-            'Name' => 'ClusterName',
-            'Value' => Ref('EcsCluster')
-          }
-        ])
-        Property('ComparisonOperator', 'LessThanThreshold')
-      }
-
-    end
-
-    Resource("ScaleUpPolicy") {
-      Condition 'IsScalingEnabled'
-      Type 'AWS::AutoScaling::ScalingPolicy'
-      Property('AdjustmentType', 'ChangeInCapacity')
-      Property('AutoScalingGroupName', Ref('AutoScaleGroup'))
-      Property('Cooldown','300')
-      Property('ScalingAdjustment', ecs_autoscale['scale_up_adjustment'])
-    }
-
-    Resource("ScaleDownPolicy") {
-      Condition 'IsScalingEnabled'
-      Type 'AWS::AutoScaling::ScalingPolicy'
-      Property('AdjustmentType', 'ChangeInCapacity')
-      Property('AutoScalingGroupName', Ref('AutoScaleGroup'))
-      Property('Cooldown','300')
-      Property('ScalingAdjustment', ecs_autoscale['scale_down_adjustment'])
-    }
-  end
-
-  Output("SecurityGroup", Ref("SecurityGroupASG"))
-  Output("AutoScaleGroup", Ref('AutoScaleGroup'))
+  Output('SecurityGroupASG') {
+    Value(Ref('SecurityGroupASG'))
+    Export FnSub("${EnvironmentName}-#{component_name}-SecurityGroup")
+  }
 
 end
