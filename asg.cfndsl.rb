@@ -1,6 +1,6 @@
 CloudFormation do
 
-  Condition 'DefinedLoadbalancers', FnNot(FnEquals(Ref('LoadBalancerNames'), ''))
+  Condition 'DefinedLoadBalancers', FnNot(FnEquals(Ref('LoadBalancerNames'), ''))
   Condition 'DefinedTargetGroups', FnNot(FnEquals(Ref('TargetGroupARNs'), ''))
   Condition 'KeyNameSet', FnNot(FnEquals(Ref('KeyName'), ''))
 
