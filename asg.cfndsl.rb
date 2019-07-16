@@ -51,6 +51,9 @@ CloudFormation do
   Role('Role') do
     AssumeRolePolicyDocument service_role_assume_policy('ec2')
     Path '/'
+    ManagedPolicyArns([
+      'arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM'
+    ])
     Policies(policies)
     Metadata({
       cfn_nag: {
