@@ -1,0 +1,10 @@
+test_metadata:
+  type: config
+  name: autoscaling
+  description: test autoscale config
+
+autoscaling:
+  cpu_high: 70
+  cpu_low: 40
+  scale_up_adjustment: 1
+  scale_down_adjustment: -1

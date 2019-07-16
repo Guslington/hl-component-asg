@@ -1,9 +1,8 @@
 CloudFormation do
 
-  Condition 'IsScalingEnabled', FnEquals(Ref('EnableScaling'), 'true')
   Condition 'DefinedLoadbalancers', FnNot(FnEquals(Ref('LoadBalancerNames'), ''))
   Condition 'DefinedTargetGroups', FnNot(FnEquals(Ref('TargetGroupARNs'), ''))
-
+  Condition 'KeyNameSet', FnNot(FnEquals(Ref('KeyName'), ''))
 
   asg_tags = []
   asg_tags.push({ Key: 'Name', Value: FnSub("${EnvironmentName}-#{component_name}") })
@@ -143,62 +142,61 @@ CloudFormation do
     })
   }
 
-  if defined?(asg_autoscale)
-    if asg_autoscale.has_key?('cpu_high')
+  if defined?(autoscaling)
+    
+    Condition 'IsScalingEnabled', FnEquals(Ref('EnableScaling'), 'true')
+  
+    Resource("CPUUtilizationAlarmHigh") {
+      Condition 'IsScalingEnabled'
+      Type 'AWS::CloudWatch::Alarm'
+      Property('AlarmDescription', "Scale-up if CPUUtilization > #{autoscaling['cpu_high']}%")
+      Property('MetricName','CPUUtilization')
+      Property('Namespace','AWS/EC2')
+      Property('Statistic', 'Maximum')
+      Property('Period', '60')
+      Property('EvaluationPeriods', '2')
+      Property('Threshold', autoscaling['cpu_high'])
+      Property('AlarmActions', [ Ref('ScaleUpPolicy') ])
+      Property('Dimensions', [
+        { Name: 'AutoScalingGroupName', Value: Ref('AutoScaleGroup') }
+      ])
+      Property('ComparisonOperator', 'GreaterThanThreshold')
+    }
 
-        Resource("CPUUtilizationAlarmHigh") {
-          Condition 'IsScalingEnabled'
-          Type 'AWS::CloudWatch::Alarm'
-          Property('AlarmDescription', "Scale-up if CPUUtilization > #{asg_autoscale['cpu_high']}%")
-          Property('MetricName','CPUUtilization')
-          Property('Namespace','AWS/EC2')
-          Property('Statistic', 'Maximum')
-          Property('Period', '60')
-          Property('EvaluationPeriods', '2')
-          Property('Threshold', asg_autoscale['cpu_high'])
-          Property('AlarmActions', [ Ref('ScaleUpPolicy') ])
-          Property('Dimensions', [
-            { Name: 'AutoScalingGroupName', Value: Ref('AutoScaleGroup') }
-          ])
-          Property('ComparisonOperator', 'GreaterThanThreshold')
-        }
+    Resource("CPUUtilizationAlarmLow") {
+      Condition 'IsScalingEnabled'
+      Type 'AWS::CloudWatch::Alarm'
+      Property('AlarmDescription', "Scale-down if CPUUtilization < #{autoscaling['cpu_low']}%")
+      Property('MetricName','CPUUtilization')
+      Property('Namespace','AWS/EC2')
+      Property('Statistic', 'Maximum')
+      Property('Period', '60')
+      Property('EvaluationPeriods', '2')
+      Property('Threshold', autoscaling['cpu_low'])
+      Property('AlarmActions', [ Ref('ScaleDownPolicy') ])
+      Property('Dimensions', [
+        { Name: 'AutoScalingGroupName', Value: Ref('AutoScaleGroup') }
+      ])
+      Property('ComparisonOperator', 'LessThanThreshold')
+    }
 
-        Resource("CPUUtilizationAlarmLow") {
-          Condition 'IsScalingEnabled'
-          Type 'AWS::CloudWatch::Alarm'
-          Property('AlarmDescription', "Scale-down if CPUUtilization < #{asg_autoscale['cpu_low']}%")
-          Property('MetricName','CPUUtilization')
-          Property('Namespace','AWS/EC2')
-          Property('Statistic', 'Maximum')
-          Property('Period', '60')
-          Property('EvaluationPeriods', '2')
-          Property('Threshold', asg_autoscale['cpu_low'])
-          Property('AlarmActions', [ Ref('ScaleDownPolicy') ])
-          Property('Dimensions', [
-            { Name: 'AutoScalingGroupName', Value: Ref('AutoScaleGroup') }
-          ])
-          Property('ComparisonOperator', 'LessThanThreshold')
-        }
+    Resource("ScaleUpPolicy") {
+      Condition 'IsScalingEnabled'
+      Type 'AWS::AutoScaling::ScalingPolicy'
+      Property('AdjustmentType', 'ChangeInCapacity')
+      Property('AutoScalingGroupName', Ref('AutoScaleGroup'))
+      Property('Cooldown','300')
+      Property('ScalingAdjustment', autoscaling['scale_up_adjustment'])
+    }
 
-      end
-
-      Resource("ScaleUpPolicy") {
-        Condition 'IsScalingEnabled'
-        Type 'AWS::AutoScaling::ScalingPolicy'
-        Property('AdjustmentType', 'ChangeInCapacity')
-        Property('AutoScalingGroupName', Ref('AutoScaleGroup'))
-        Property('Cooldown','300')
-        Property('ScalingAdjustment', asg_autoscale['scale_up_adjustment'])
-      }
-
-      Resource("ScaleDownPolicy") {
-        Condition 'IsScalingEnabled'
-        Type 'AWS::AutoScaling::ScalingPolicy'
-        Property('AdjustmentType', 'ChangeInCapacity')
-        Property('AutoScalingGroupName', Ref('AutoScaleGroup'))
-        Property('Cooldown','300')
-        Property('ScalingAdjustment', asg_autoscale['scale_down_adjustment'])
-      }
+    Resource("ScaleDownPolicy") {
+      Condition 'IsScalingEnabled'
+      Type 'AWS::AutoScaling::ScalingPolicy'
+      Property('AdjustmentType', 'ChangeInCapacity')
+      Property('AutoScalingGroupName', Ref('AutoScaleGroup'))
+      Property('Cooldown','300')
+      Property('ScalingAdjustment', autoscaling['scale_down_adjustment'])
+    }
   end
 
   Output('SecurityGroupASG') {
