@@ -10,29 +10,10 @@ CloudFormation do
   asg_tags.push({ Key: 'EnvironmentType', Value: Ref(:EnvironmentType) })
   asg_tags.push(*tags.map {|k,v| {Key: k, Value: FnSub(v)}}).uniq { |h| h[:Key] } if defined? tags
 
-  ingress = []
-  security_group_rules.each do |rule|
-    sg_rule = {
-      FromPort: rule['from_port'],
-      IpProtocol: rule['protocol'],
-      ToPort: rule['to_port']
-    }
-
-    if rule['security_group_id']
-      sg_rule['SourceSecurityGroupId'] = FnSub(rule['security_group_id'])
-    else
-      sg_rule['CidrIp'] = FnSub(rule['ip'])
-    end
-    if rule['desc']
-      sg_rule['Description'] = FnSub(rule['desc'])
-    end
-    ingress << sg_rule
-  end if defined?(security_group_rules)
-
   EC2_SecurityGroup "SecurityGroupASG" do
     VpcId Ref('VPCId')
-    GroupDescription FnJoin(' ', [ Ref(:EnvironmentName), component_name, 'security group' ])
-    SecurityGroupIngress ingress if ingress.any?
+    GroupDescription FnSub("${EnvironmentName} #{component_name} access")
+    SecurityGroupIngress generate_security_group_rules(security_group_rules,ip_blocks) if defined? security_group_rules
     SecurityGroupEgress ([
       {
         CidrIp: "0.0.0.0/0",

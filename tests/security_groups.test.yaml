@@ -1,0 +1,34 @@
+test_metadata:
+  type: config
+  name: security_groups
+  description: set the description for your test
+
+ip_blocks:
+  local:
+    - 127.0.0.1/32
+    - 127.0.0.2/32
+  public:
+    - 0.0.0.0/0
+
+security_group_rules:
+  -
+    from: 80
+    ip: 0.0.0.0/0
+    desc: public HTTP access
+  -
+    from: 20
+    to: 21
+    ip_blocks:
+      - local
+    desc: local ftp access
+  -
+    from: 443
+    ip_blocks:
+      - public
+    desc: public HTTPS access
+  -
+    from: 22
+    protocol: tcp
+    security_group_id: sg-fqerekjrhr
+    desc: ssh access from another security group
+    
