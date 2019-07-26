@@ -17,7 +17,7 @@ def generate_security_group_rules(security_group_rules,ip_blocks={})
     
     if ips.any?
       ips.each do |ip|
-        sg_rule[:CidrIp] = ip
+        sg_rule[:CidrIp] = FnSub(ip)
         rules << sg_rule
       end
     else
