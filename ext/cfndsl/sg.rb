@@ -4,7 +4,7 @@ def generate_security_group_rules(security_group_rules,ip_blocks={})
     ips = []
     
     if rule.has_key?('ip_blocks')
-      ip_blocks.each { |name,block| (ips.concat(block)).uniq }
+      rule['ip_blocks'].each { |block| (ips.concat(ip_blocks[block])).uniq }
     elsif rule.has_key?('ip')
       ips.push(rule['ip'])  
     end

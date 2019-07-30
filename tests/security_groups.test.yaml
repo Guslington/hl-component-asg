@@ -9,12 +9,6 @@ ip_blocks:
     - 127.0.0.2/32
   public:
     - 0.0.0.0/0
-  customer:
-    - 118.127.101.238/32
-    - 203.111.27.242/32
-    - 61.69.79.214/32
-    - 203.161.88.62/32
-    - 220.244.53.186/32
 
 security_group_rules:
   -
@@ -26,7 +20,6 @@ security_group_rules:
     to: 21
     ip_blocks:
       - local
-      - customer
     desc: local ftp access
   -
     from: 443
