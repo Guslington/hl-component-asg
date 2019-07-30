@@ -17,13 +17,16 @@ def generate_security_group_rules(security_group_rules,ip_blocks={})
     
     if ips.any?
       ips.each do |ip|
-        sg_rule[:CidrIp] = FnSub(ip)
-        rules << sg_rule
+        ip_sg_rule = sg_rule.clone
+        ip_sg_rule[:CidrIp] = FnSub(ip)
+        rules.push(ip_sg_rule)
       end
     else
-      sg_rule[:SourceSecurityGroupId] = FnSub(rule['security_group_id'])
-      rules << sg_rule
+      id_sg_rule = sg_rule.clone
+      id_sg_rule[:SourceSecurityGroupId] = FnSub(rule['security_group_id'])
+      rules.push(id_sg_rule)
     end
   end
+  
   return rules
 end
